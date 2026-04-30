@@ -1899,8 +1899,15 @@
               <>
                 <div className="mx-9 border-t border-ink-100" />
                 <div className="px-14 py-6">
-                  <div className="flex items-baseline gap-2 mb-3">
+                  <div className="flex items-center gap-2 mb-3">
                     <span className="text-[14px] font-semibold leading-5 text-ink-900">Failover Chain</span>
+                    <PortalTooltip
+                      text="If the call is not answered during any failover step, it will be automatically disconnected"
+                      maxWidth={380}
+                      className="group cursor-help"
+                    >
+                      <Icon name="info" size={14} className="text-[#4C5863] group-hover:text-[#244C91] transition-colors" />
+                    </PortalTooltip>
                     {failoverConfigured && (
                       <span className="text-[14px] leading-5 text-ink-500">[{fc.length} steps]</span>
                     )}
