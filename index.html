@@ -2043,8 +2043,15 @@
               <>
                 <div className="mx-9 border-t border-ink-100" />
                 <div className="px-14 py-6">
-                  <div className="flex items-baseline gap-2 mb-3">
+                  <div className="flex items-center gap-2 mb-3">
                     <span className="text-[14px] font-semibold leading-5 text-ink-900">Configuration</span>
+                    <PortalTooltip
+                      text="To view the configuration for each destination linked to the Automated Assistant’s keys, select Edit from the Actions menu."
+                      maxWidth={380}
+                      className="group cursor-help h-5 items-center"
+                    >
+                      <Icon name="info" size={14} className="text-[#4C5863] group-hover:text-[#244C91] transition-colors" />
+                    </PortalTooltip>
                   </div>
                   {configConfigured ? (
                     // Two columns of key rows. `grid-flow-col` with an
@@ -2073,7 +2080,7 @@
                     <PortalTooltip
                       text="If the call is not answered during any failover step, it will be automatically disconnected"
                       maxWidth={380}
-                      className="group cursor-help"
+                      className="group cursor-help h-5 items-center"
                     >
                       <Icon name="info" size={14} className="text-[#4C5863] group-hover:text-[#244C91] transition-colors" />
                     </PortalTooltip>
@@ -2118,6 +2125,12 @@
         // bring the hidden portion into view (and align the row's top to the
         // viewport when it's taller than the viewport itself). The very
         // first render is skipped so we never auto-scroll on initial load.
+        //
+        // The expanded body's height settles asynchronously (the location
+        // cards width is measured via ResizeObserver after first paint), so
+        // we don't just measure once — we re-evaluate on every row size
+        // change while the row is expanded. After the row stops growing
+        // we stop adjusting so the user can scroll freely.
         const rowRefs = useRef({});
         const isInitialRender = useRef(true);
         useEffect(() => {
@@ -2128,8 +2141,18 @@
           if (!expandedRow) return;
           const el = rowRefs.current[expandedRow];
           if (!el) return;
-          // Wait for the expanded body to lay out before measuring.
-          requestAnimationFrame(() => {
+
+          let cancelled = false;
+          let lastHeight = 0;
+          // Stable timestamp captured per-expand so user-initiated scroll
+          // after the initial settle doesn't get fought by the observer.
+          const startedAt = Date.now();
+          // After this many ms with no further size change, stop watching
+          // so the user is left alone to scroll.
+          const SETTLE_WINDOW_MS = 1500;
+
+          const fit = (smooth) => {
+            if (cancelled) return;
             const rect = el.getBoundingClientRect();
             const vh = window.innerHeight;
             const margin = 16;
@@ -2147,9 +2170,42 @@
               delta = rect.top - margin;
             }
             if (delta !== 0) {
-              window.scrollBy({ top: delta, behavior: "smooth" });
+              window.scrollBy({ top: delta, behavior: smooth ? "smooth" : "auto" });
             }
-          });
+          };
+
+          // First pass after the next paint to catch the initial layout.
+          const raf = requestAnimationFrame(() => fit(true));
+
+          // Re-run whenever the row's size changes (e.g. cards grid width
+          // resolves, fonts settle, images load). We bail out once the
+          // row stops growing or after SETTLE_WINDOW_MS to avoid fighting
+          // the user if they start scrolling manually.
+          let observer = null;
+          if (typeof ResizeObserver !== "undefined") {
+            observer = new ResizeObserver((entries) => {
+              if (cancelled) return;
+              const h = entries[0].contentRect.height;
+              if (h === lastHeight) return;
+              lastHeight = h;
+              if (Date.now() - startedAt > SETTLE_WINDOW_MS) {
+                observer.disconnect();
+                return;
+              }
+              // Use a non-smooth fit on subsequent adjustments so we don't
+              // animate the user around mid-settle.
+              fit(false);
+            });
+            observer.observe(el);
+            // Hard cap: stop observing after the settle window.
+            setTimeout(() => observer && observer.disconnect(), SETTLE_WINDOW_MS);
+          }
+
+          return () => {
+            cancelled = true;
+            cancelAnimationFrame(raf);
+            if (observer) observer.disconnect();
+          };
         }, [expandedRow]);
 
         const filteredAddTypes = useMemo(() => {
