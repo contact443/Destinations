@@ -1329,15 +1329,59 @@
         }
         return out;
       };
-      const makeFailover = (count, seed) => {
+      // Automated Attendant keypad helpers. A keypad has 12 keys (1-9, 0, #, *).
+      // Each key is either:
+      //   - assigned   → has a location and a destination target,
+      //   - unassigned → no destination, target shows as "N/A",
+      //   - disabled   → reserved for Key 0 only (hangs up, doesn't forward).
+      const KEYPAD_KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "#", "*"];
+      const makeKeypadConfig = (seed, selfNumber) => {
         let s = seed || 1;
         const rand = () => {
           s = (s * 9301 + 49297) % 233280;
           return s / 233280;
         };
+        const pool = selfNumber
+          ? FAILOVER_TARGETS.filter((t) => !t.target.includes(`[${selfNumber}]`))
+          : FAILOVER_TARGETS;
+        return KEYPAD_KEYS.map((key) => {
+          const r = rand();
+          // ~25% of keys are unassigned to mirror real-world IVR setups
+          // where only some keys are mapped. Key 0 is additionally allowed
+          // to be Disabled (~25% chance) which is reserved for that key.
+          if (key === "0" && r < 0.3) {
+            return { key, state: "disabled" };
+          }
+          if (r < 0.25) {
+            return { key, state: "unassigned" };
+          }
+          const t = pool[Math.floor(rand() * pool.length)];
+          const loc = ALL_LOCATIONS[Math.floor(rand() * ALL_LOCATIONS.length)];
+          return {
+            key,
+            state: "assigned",
+            location: loc,
+            target: t.target,
+            type: t.type,
+          };
+        });
+      };
+
+      // `selfNumber` is the destination's own extension number (string). Any
+      // target whose label embeds `[selfNumber]` is filtered out so a
+      // destination never fails over to itself.
+      const makeFailover = (count, seed, selfNumber) => {
+        let s = seed || 1;
+        const rand = () => {
+          s = (s * 9301 + 49297) % 233280;
+          return s / 233280;
+        };
+        const pool = selfNumber
+          ? FAILOVER_TARGETS.filter((t) => !t.target.includes(`[${selfNumber}]`))
+          : FAILOVER_TARGETS;
         const out = [];
         for (let i = 0; i < count; i++) {
-          const t = FAILOVER_TARGETS[Math.floor(rand() * FAILOVER_TARGETS.length)];
+          const t = pool[Math.floor(rand() * pool.length)];
           const d = FAILOVER_DURATIONS[Math.floor(rand() * FAILOVER_DURATIONS.length)];
           const loc = FAILOVER_LOCATIONS[Math.floor(rand() * FAILOVER_LOCATIONS.length)];
           out.push({
@@ -1363,7 +1407,7 @@
             { name: "San Francisco", count: 14 },
             { name: "Toronto",       count: 11 },
           ], 110),
-          failoverChain: makeFailover(3, 111),
+          failoverChain: makeFailover(3, 111, "8014"),
         },
         // Ring Group — full 5-location case with explicit failover. Default
         // expanded row when the page first loads.
@@ -1380,21 +1424,47 @@
             { name: "Vancouver",     count: 27 },
           ], 200),
           failoverChain: [
-            { step: 1, location: "Pheonix",       target: "Ring All [8820]",     type: "Ring Group", duration: "Ring duration: 36 seconds" },
-            { step: 2, location: "San Francisco", target: "Service Line [8730]", type: "Queue",      duration: "Ring duration: 25 seconds" },
+            { step: 1, location: "Pheonix",       target: "Ring All [8014]",       type: "Ring Group",        duration: "Ring duration: 36 seconds" },
+            { step: 2, location: "San Francisco", target: "Support Queue [8094]",  type: "Queue",             duration: "Ring duration: 25 seconds" },
             { step: 3, location: "Toronto",       target: "Reception Hunt [8060]", type: "Linear Hunt Group", duration: "Follows FM / FM extension rules" },
           ],
         },
         // Ring Group — both sections allowed but neither configured yet;
         // demonstrates the empty Members AND empty Failover Chain states.
         { number: "8016", name: "New Ring Group", type: "Ring Group", expandable: true },
-        // Automated Attendant — failover only (cannot have members).
+        // Automated Attendant — Configuration + Failover (cannot have
+        // members). Demonstrates a fully-configured keypad including a
+        // Disabled Key 0 and a couple of unassigned keys.
         {
           number: "8018",
           name: "Main IVR",
           type: "Automated Attendant",
           expandable: true,
-          failoverChain: makeFailover(2, 312),
+          keypadConfig: [
+            { key: "1", state: "assigned",   location: "Pheonix",       target: "Ring All [8014]",        type: "Ring Group" },
+            { key: "2", state: "assigned",   location: "San Francisco", target: "Support Queue [8094]",   type: "Queue" },
+            { key: "3", state: "unassigned" },
+            { key: "4", state: "assigned",   location: "Toronto",       target: "Reception Hunt [8060]",  type: "Linear Hunt Group" },
+            { key: "5", state: "assigned",   location: "Vancouver",     target: "Sales Queue [8096]",     type: "Queue" },
+            { key: "6", state: "assigned",   location: "Sarasota",      target: "Recording 1 [8025]",     type: "Recording" },
+            { key: "7", state: "assigned",   location: "Pheonix",       target: "After Hours [8095]",     type: "Ring Group" },
+            { key: "8", state: "assigned",   location: "San Francisco", target: "Page All [8076]",        type: "Paging Group" },
+            { key: "9", state: "unassigned" },
+            { key: "0", state: "disabled" },
+            { key: "#", state: "assigned",   location: "Toronto",       target: "VM All [8029]",          type: "Voicemail Group" },
+            { key: "*", state: "assigned",   location: "Pheonix",       target: "External Number [8027]", type: "External Number" },
+          ],
+          failoverChain: makeFailover(2, 312, "8018"),
+        },
+        // Automated Attendant — Configuration allowed but unconfigured;
+        // demonstrates the empty Configuration state next to a populated
+        // failover chain.
+        {
+          number: "8019",
+          name: "Holiday IVR",
+          type: "Automated Attendant",
+          expandable: true,
+          failoverChain: makeFailover(2, 313, "8019"),
         },
         // Recording — failover only (cannot have members).
         {
@@ -1402,7 +1472,7 @@
           name: "Recording 1",
           type: "Recording",
           expandable: true,
-          failoverChain: makeFailover(4, 413),
+          failoverChain: makeFailover(4, 413, "8025"),
         },
         // Recording — failover allowed but not yet configured; demonstrates
         // the empty Failover Chain state. No Members section appears.
@@ -1413,12 +1483,14 @@
           name: "External Number",
           type: "External Number",
           expandable: true,
-          failoverChain: makeFailover(2, 414),
+          failoverChain: makeFailover(2, 414, "8027"),
         },
         // DTMF Capture — cannot have members or failover. Row is NOT
         // collapsible (no chevron).
         { number: "8028", name: "DTMF Capture",         type: "DTMF Capture",    expandable: false },
-        // Voicemail Group — members only (cannot have failover).
+        // Voicemail Group — members only (cannot have failover). Includes
+        // 7 locations so the location-card grid wraps to a second row at
+        // typical desktop widths.
         {
           number: "8029",
           name: "VM All",
@@ -1429,6 +1501,9 @@
             { name: "San Francisco", count: 21 },
             { name: "Toronto",       count: 14 },
             { name: "Vancouver",     count: 16 },
+            { name: "New York",      count: 12 },
+            { name: "Chicago",       count: 8  },
+            { name: "Boston",        count: 10 },
           ], 520),
         },
         // Conference Room — cannot have members or failover. Row is NOT
@@ -1447,7 +1522,7 @@
             { name: "New York",      count: 9  },
             { name: "Chicago",       count: 7  },
           ], 605),
-          failoverChain: makeFailover(3, 606),
+          failoverChain: makeFailover(3, 606, "8060"),
         },
         // StarSIP Port Group — members only (cannot have failover); also
         // demonstrates extra locations.
@@ -1482,7 +1557,7 @@
           name: "Sangoma AI Bot",
           type: "Sangoma AI",
           expandable: true,
-          failoverChain: makeFailover(3, 805),
+          failoverChain: makeFailover(3, 805, "8080"),
         },
         // Queue — both sections (uses the "Agents" label).
         {
@@ -1496,7 +1571,7 @@
             { name: "Sarasota",      count: 9  },
             { name: "Toronto",       count: 13 },
           ], 720),
-          failoverChain: makeFailover(3, 721),
+          failoverChain: makeFailover(3, 721, "8094"),
         },
         // Ring Group — both sections, 6 locations (one extra) so the grid
         // wraps to a second row.
@@ -1513,7 +1588,7 @@
             { name: "Vancouver",     count: 24 },
             { name: "New York",      count: 9  },
           ], 830),
-          failoverChain: makeFailover(5, 831),
+          failoverChain: makeFailover(5, 831, "8095"),
         },
         // Queue — both sections allowed but neither configured yet;
         // demonstrates the empty Agents AND empty Failover Chain states.
@@ -1596,14 +1671,17 @@
         (seed) => pickLocations(6, seed + 500).map((name, i) => ({ name, count: 3 + ((seed + i * 13) % 19) })),
       ];
 
-      const buildFillerDetail = (type, seed) => {
+      const buildFillerDetail = (type, seed, selfNumber) => {
         const detail = {};
         if (canHaveMembers(type)) {
           const specsFn = FILLER_LOCATION_SPECS[seed % FILLER_LOCATION_SPECS.length];
           detail.groupExtension = makeGroup(specsFn(seed), seed);
         }
         if (canHaveFailover(type)) {
-          detail.failoverChain = makeFailover(2 + (seed % 4), seed + 1);
+          detail.failoverChain = makeFailover(2 + (seed % 4), seed + 1, selfNumber);
+        }
+        if (type === "Automated Attendant") {
+          detail.keypadConfig = makeKeypadConfig(seed + 2, selfNumber);
         }
         return detail;
       };
@@ -1614,7 +1692,7 @@
           const n = 8100 + i;
           const seed = 900 + i * 13;
           const type = FILLER_TYPES[i % FILLER_TYPES.length];
-          const detail = buildFillerDetail(type, seed);
+          const detail = buildFillerDetail(type, seed, String(n));
           // A destination is only collapsible when its type is allowed to
           // hold at least one of Members or Failover Chain.
           const expandable = canHaveMembers(type) || canHaveFailover(type);
@@ -1665,7 +1743,7 @@
       // listing every member. All cards in a row stay the same size; each
       // card scrolls its own list. Width is driven by the grid container.
       const LocationCard = ({ name, count, members, query }) => (
-        <div className="min-w-0 h-[200px] rounded-lg bg-white overflow-hidden flex flex-col">
+        <div className="min-w-0 w-full max-w-[280px] h-[200px] rounded-lg bg-white overflow-hidden flex flex-col">
           {/* Fixed header — does not scroll. */}
           <div className="shrink-0 flex items-center justify-between gap-2 h-9 px-3 bg-white">
             <span
@@ -1711,6 +1789,26 @@
           </div>
         </div>
       );
+
+      // Single keypad-key row inside the Configuration section (Automated
+      // Attendant only). Three columns: key label, location/state, target.
+      const KeyConfigRow = ({ entry }) => {
+        const isAssigned = entry.state === "assigned";
+        const stateLabel = isAssigned
+          ? entry.location
+          : entry.state === "disabled"
+            ? "Disabled"
+            : "Unassigned";
+        return (
+          <div className="grid grid-cols-[64px_minmax(0,1fr)_minmax(0,1.2fr)] items-center h-8 px-4 bg-white rounded-lg text-[14px] leading-5">
+            <span className="font-semibold text-ink-900">Key {entry.key}</span>
+            <span className="text-ink-900 truncate pr-3">{stateLabel}</span>
+            <span className="font-semibold text-ink-900 truncate">
+              {isAssigned ? entry.target : <span className="text-ink-500 font-normal">N/A</span>}
+            </span>
+          </div>
+        );
+      };
 
       // Row-level kebab menu for the Destinations table — Edit / Duplicate /
       // Delete. Same shape and portal-positioned dropdown as the row menus on
@@ -1791,6 +1889,7 @@
       // Expanded-row body for a destination. Sections are gated by the
       // destination's type capabilities:
       //   - Members section is only rendered for types that can have members.
+      //   - Configuration section is only rendered for Automated Attendant.
       //   - Failover Chain section is only rendered for types that can have one.
       // When a section is allowed but unconfigured, an empty-state message
       // takes the place of the data with a prompt to edit the destination.
@@ -1798,8 +1897,10 @@
         const [memberSearch, setMemberSearch] = useState("");
         const ge = destination.groupExtension;
         const fc = destination.failoverChain;
+        const kc = destination.keypadConfig;
 
         const showMembers  = canHaveMembers(destination.type);
+        const showConfig   = destination.type === "Automated Attendant";
         const showFailover = canHaveFailover(destination.type);
         const isQueue = destination.type === "Queue";
         const memberLabel    = isQueue ? "Agents"  : "Members";
@@ -1818,9 +1919,50 @@
           }));
         }, [ge, memberSearch]);
 
+        // Track the available width of the Members section so the search bar
+        // and the location-card grid can be capped to the actual width the
+        // cards will occupy (cards are 200–280px; when there are too few to
+        // fill the row, the row stays at cardCount × 280 + gaps and the
+        // search bar shrinks to align with that width).
+        const memberSectionRef = useRef(null);
+        const [memberSectionWidth, setMemberSectionWidth] = useState(0);
+        useEffect(() => {
+          const el = memberSectionRef.current;
+          if (!el || typeof ResizeObserver === "undefined") return;
+          const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+              setMemberSectionWidth(entry.contentRect.width);
+            }
+          });
+          observer.observe(el);
+          return () => observer.disconnect();
+        }, []);
+
+        // Compute the actual width occupied by a single row of cards. The
+        // grid is `repeat(auto-fit, minmax(200px, 1fr))` with a 16px gap and
+        // each card caps itself at 280px. We mirror that math here to drive
+        // the --search-width variable so the search bar matches the cards'
+        // visible row width when cards don't fill the container.
+        const cardsRowMaxWidth = (() => {
+          const minSize = 200;
+          const maxSize = 280;
+          const gap = 16;
+          const cw = memberSectionWidth;
+          const count = filteredLocations.length;
+          if (cw <= 0 || count <= 0) return null;
+          const maxColsAtMin = Math.max(1, Math.floor((cw + gap) / (minSize + gap)));
+          const colsPerRow = Math.min(count, maxColsAtMin);
+          const naturalWidth = (cw - (colsPerRow - 1) * gap) / colsPerRow;
+          if (naturalWidth >= maxSize) {
+            return colsPerRow * maxSize + (colsPerRow - 1) * gap;
+          }
+          return cw;
+        })();
+
         // Defensive fallback — should not normally be reached because rows
-        // whose type can hold neither section are rendered as non-collapsible.
-        if (!showMembers && !showFailover) {
+        // whose type can hold none of the sections are rendered as
+        // non-collapsible.
+        if (!showMembers && !showConfig && !showFailover) {
           return (
             <div className="px-14 py-6 text-[14px] text-ink-500">
               No additional details for this destination.
@@ -1829,6 +1971,7 @@
         }
 
         const membersConfigured  = !!(ge && ge.locations && ge.locations.length > 0);
+        const configConfigured   = !!(kc && kc.length > 0);
         const failoverConfigured = !!(fc && fc.length > 0);
 
         return (
@@ -1836,7 +1979,7 @@
             {showMembers && (
               <>
                 <div className="mx-9 border-t border-ink-100" />
-                <div className="px-14 py-6">
+                <div ref={memberSectionRef} className="px-14 py-6">
                   <div className="flex items-baseline gap-2 mb-3">
                     <span className="text-[14px] font-semibold leading-5 text-ink-900">{memberLabel}</span>
                     {membersConfigured && (
@@ -1846,50 +1989,76 @@
                     )}
                   </div>
                   {membersConfigured ? (
-                    (() => {
-                      // Cards flex to fill the available horizontal space but
-                      // never exceed 360px each. The grid lays out up to 5
-                      // columns per row; extra cards wrap to the next row.
-                      // The search bar shares a wrapper with the grid so its
-                      // left and right edges always align with the cards.
-                      const visibleCols = Math.min(filteredLocations.length, 5);
-                      const wrapperMax  = visibleCols * 280 + Math.max(0, visibleCols - 1) * 12;
-                      return (
-                        <div style={{ width: "100%", maxWidth: `${wrapperMax}px` }}>
-                          {/* Member search — 12px below the grid, aligned to
-                              the same width as the cards. */}
-                          <div className="relative mb-3">
-                            <Icon name="search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-500" />
-                            <input
-                              type="text"
-                              value={memberSearch}
-                              onChange={(e) => setMemberSearch(e.target.value)}
-                              placeholder="Search by extension, name, or number"
-                              className="w-full h-9 pl-9 pr-3 text-[14px] leading-5 tracking-[0.018em] text-ink-900 placeholder:text-ink-500 bg-white border border-ink-200 rounded hover:border-ink-400 focus:outline-none focus:border-primary-500"
-                            />
-                          </div>
-                          <div
-                            className="grid gap-3"
-                            style={{
-                              gridTemplateColumns: `repeat(${visibleCols}, minmax(0, 280px))`,
-                            }}
-                          >
-                            {filteredLocations.map((loc) => (
-                              <LocationCard
-                                key={loc.name}
-                                name={loc.name}
-                                count={loc.count}
-                                members={loc.members}
-                                query={memberSearch.trim()}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    })()
+                    // .location-layout — full width of the section. The
+                    // --search-width variable is set to the cards' actual
+                    // row width so the search bar aligns with the grid
+                    // when cards don't fill the container.
+                    <div
+                      className="w-full"
+                      style={{
+                        "--search-width": cardsRowMaxWidth != null ? `${cardsRowMaxWidth}px` : "100%",
+                      }}
+                    >
+                      <div
+                        className="relative mb-3"
+                        style={{ width: "var(--search-width)" }}
+                      >
+                        <Icon name="search" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-500" />
+                        <input
+                          type="text"
+                          value={memberSearch}
+                          onChange={(e) => setMemberSearch(e.target.value)}
+                          placeholder="Search by extension, name, or number"
+                          className="w-full h-9 pl-9 pr-3 text-[14px] leading-5 tracking-[0.018em] text-ink-900 placeholder:text-ink-500 bg-white border border-ink-200 rounded hover:border-ink-400 focus:outline-none focus:border-primary-500"
+                        />
+                      </div>
+                      <div
+                        className="grid"
+                        style={{
+                          width: "var(--search-width)",
+                          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                          gap: "16px",
+                        }}
+                      >
+                        {filteredLocations.map((loc) => (
+                          <LocationCard
+                            key={loc.name}
+                            name={loc.name}
+                            count={loc.count}
+                            members={loc.members}
+                            query={memberSearch.trim()}
+                          />
+                        ))}
+                      </div>
+                    </div>
                   ) : (
                     <div className="text-[14px] leading-5 text-ink-500">
                       This destination currently has no {memberLowerSng}. To add {memberLowerSng}, edit the destination.
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+            {showConfig && (
+              <>
+                <div className="mx-9 border-t border-ink-100" />
+                <div className="px-14 py-6">
+                  <div className="flex items-baseline gap-2 mb-3">
+                    <span className="text-[14px] font-semibold leading-5 text-ink-900">Configuration</span>
+                  </div>
+                  {configConfigured ? (
+                    // Two columns of key rows. `grid-flow-col` with an
+                    // explicit 6-row track makes the keys flow column-first
+                    // (Keys 1–6 in the left column, then Keys 7, 8, 9, 0,
+                    // #, * in the right column) to match the design.
+                    <div className="grid grid-flow-col grid-rows-6 gap-x-8 gap-y-2">
+                      {kc.map((entry) => (
+                        <KeyConfigRow key={entry.key} entry={entry} />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[14px] leading-5 text-ink-500">
+                      This destination currently has no keypad configuration. To configure keys, edit the destination.
                     </div>
                   )}
                 </div>
